@@ -8,7 +8,7 @@ export async function POST(request: NextRequest) {
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
         async start(controller) {
-            const events = client.listChatCompletions(
+            const events = await client.streamChatCompletions(
                 model,
                 [
                     {
