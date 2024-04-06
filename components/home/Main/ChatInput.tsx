@@ -2,13 +2,15 @@ import Button from "@/components/common/Button";
 import { MdRefresh } from "react-icons/md";
 import { PiLightningFill, PiStopBold } from "react-icons/pi";
 import { FiSend } from "react-icons/fi";
-import TextareaAutosize from "react-textarea-autosize";
+import TextareaAutoSize from "react-textarea-autosize";
 import { useEffect, useRef, useState } from "react";
-import { v4 as uuidv4 } from "uuid";
-import { useAppContext } from "@/components/AppContext";
 import { Message, MessageRequestBody } from "@/types/chat";
+import { useAppContext } from "@/components/AppContext";
 import { ActionType } from "@/reducer/AppReducer";
-import { useEventBusContext } from "@/components/EventBusContent";
+import {
+    useEventBusContext,
+    EventListener,
+} from "@/components/EventBusContent";
 
 export default function ChatInput() {
     const [messageText, setMessageText] = useState("");
@@ -18,7 +20,15 @@ export default function ChatInput() {
         state: { messageList, currentModel, streamingId, selectedChat },
         dispatch,
     } = useAppContext();
-    const { publish } = useEventBusContext();
+    const { publish, subscribe, unsubscribe } = useEventBusContext();
+
+    useEffect(() => {
+        const callback: EventListener = (data) => {
+            send(data);
+        };
+        subscribe("createNewChat", callback);
+        return () => unsubscribe("createNewChat", callback);
+    }, []);
 
     useEffect(() => {
         if (chatIdRef.current === selectedChat?.id) {
@@ -27,13 +37,13 @@ export default function ChatInput() {
         chatIdRef.current = selectedChat?.id ?? "";
         stopRef.current = true;
     }, [selectedChat]);
+
     async function createOrUpdateMessage(message: Message) {
         const response = await fetch("/api/message/update", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
             },
-
             body: JSON.stringify(message),
         });
         if (!response.ok) {
@@ -68,16 +78,78 @@ export default function ChatInput() {
         return code === 0;
     }
 
-    async function send() {
+    async function send(content: string) {
         const message = await createOrUpdateMessage({
             id: "",
             role: "user",
-            content: messageText,
+            content,
             chatId: chatIdRef.current,
         });
+        if (!message) {
+            return;
+        }
         dispatch({ type: ActionType.ADD_MESSAGE, message });
         const messages = messageList.concat([message]);
         doSend(messages);
+
+        if (!selectedChat?.title || selectedChat.title === "新对话") {
+            updateChatTitle(messages);
+        }
+    }
+
+    async function updateChatTitle(messages: Message[]) {
+        const message: Message = {
+            id: "",
+            role: "user",
+            content:
+                "使用 5 到 10 个字直接返回这句话的简要主题，不要解释、不要标点、不要语气词、不要多余文本，如果没有主题，请直接返回'新对话'",
+            chatId: chatIdRef.current,
+        };
+        const chatId = chatIdRef.current;
+        const body: MessageRequestBody = {
+            messages: [...messages, message],
+            model: currentModel,
+        };
+        let response = await fetch("/api/chat", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(body),
+        });
+        if (!response.ok) {
+            console.log(response.statusText);
+            return;
+        }
+        if (!response.body) {
+            console.log("body error");
+            return;
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let done = false;
+        let title = "";
+        while (!done) {
+            const result = await reader.read();
+            done = result.done;
+            const chunk = decoder.decode(result.value);
+            title += chunk;
+        }
+        response = await fetch("/api/chat/update", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ id: chatId, title }),
+        });
+        if (!response.ok) {
+            console.log(response.statusText);
+            return;
+        }
+        const { code } = await response.json();
+        if (code === 0) {
+            publish("fetchChatList");
+        }
     }
 
     async function resend() {
@@ -129,6 +201,10 @@ export default function ChatInput() {
             content: "",
             chatId: chatIdRef.current,
         });
+        if (!responseMessage) {
+            controller.abort();
+            return;
+        }
         dispatch({ type: ActionType.ADD_MESSAGE, message: responseMessage });
         dispatch({
             type: ActionType.UPDATE,
@@ -147,7 +223,6 @@ export default function ChatInput() {
             const result = await reader.read();
             done = result.done;
             const chunk = decoder.decode(result.value);
-            console.log(chunk);
             content += chunk;
             dispatch({
                 type: ActionType.UPDATE_MESSAGE,
@@ -160,7 +235,6 @@ export default function ChatInput() {
             field: "streamingId",
             value: "",
         });
-        setMessageText("");
     }
 
     return (
@@ -191,10 +265,10 @@ export default function ChatInput() {
                         </Button>
                     ))}
                 <div className="flex items-end w-full border border-black/10 dark:border-gray-800/50 bg-white dark:bg-gray-700 rounded-lg shadow-[0_0_15px_rgba(0,0,0,0.1)] py-4">
-                    <div className="mx-3 mb-2.5">
+                    <div className="mx-3 mb-2.5 text-primary-500">
                         <PiLightningFill />
                     </div>
-                    <TextareaAutosize
+                    <TextareaAutoSize
                         className="outline-none flex-1 max-h-64 mb-1.5 bg-transparent text-black dark:text-white resize-none border-0"
                         placeholder="输入一条消息..."
                         rows={1}
@@ -210,19 +284,21 @@ export default function ChatInput() {
                             messageText.trim() === "" || streamingId !== ""
                         }
                         variant="primary"
-                        onClick={send}
-                    ></Button>
+                        onClick={() => {
+                            send(messageText);
+                        }}
+                    />
                 </div>
                 <footer className="text-center text-sm text-gray-700 dark:text-gray-300 px-4 pb-6">
-                    ©{new Date().getFullYear()}&nbsp;
+                    ©️{new Date().getFullYear()}&nbsp;{" "}
                     <a
                         className="font-medium py-[1px] border-b border-dotted border-black/60 hover:border-black/0 dark:border-gray-200 dark:hover:border-gray-200/0 animated-underline"
-                        href="http://d1cky.me"
+                        href="https://x.zhixing.co"
                         target="_blank"
                     >
-                        dick
+                        知行小课
                     </a>
-                    .&nbsp;基于第三方接口
+                    .&nbsp;基于第三方提供的接口
                 </footer>
             </div>
         </div>
